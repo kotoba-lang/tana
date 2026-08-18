@@ -101,6 +101,55 @@
                          columns (:columns rg)))})
            row-groups))})
 
+(defn from-arrow
+  "A member from `{:object :size}` and what an Arrow IPC file's metadata said.
+
+  `metadata` is `{:fields [{:name ..}] :buffer-counts [n ..] :batches
+  [{:rows :nodes :buffers :body-at} ..]}` — the shape `arrow.ipc/footer`,
+  `arrow.ipc/buffer-counts` and `arrow.ipc/batch-header` return, as data.
+
+  **Arrow records no column bounds.** Not a gap in this adapter and not
+  something to paper over: a member built from Arrow reports `:rows` and
+  `:nulls` and no `:min`/`:max`, so `columnar.stats` refuses to prune it and
+  the root gives location without pruning. A format that records less plugs
+  in by reporting less. Inventing a wide-open interval here would be a claim
+  the data never made, and it would permit a skip.
+
+  The range for a column is the span of **its** buffers — validity and values
+  are separate buffers and both are needed, so one range covers from the
+  first to the end of the last."
+  [{:keys [object size]} {:keys [fields buffer-counts batches]}]
+  (when-not (non-blank object)
+    (throw (ex-info "a member needs an object address" {:type :tana/invalid-member})))
+  (when-not (and (number? size) (pos? size))
+    (throw (ex-info "a member needs the object's size"
+                    {:type :tana/invalid-member :object object})))
+  (let [names (mapv :name fields)
+        base (reductions + 0 buffer-counts)]
+    {:object object
+     :size size
+     :rows (reduce + 0 (map :rows batches))
+     :chunks
+     (mapv (fn [{:keys [rows nodes buffers body-at compression]}]
+             {:rows rows
+              :columns
+              (into {}
+                    (map-indexed
+                     (fn [k col]
+                       (let [from (nth base k)
+                             mine (subvec (vec buffers) from (+ from (nth buffer-counts k)))
+                             node (nth nodes k nil)]
+                         [col {:range [(+ body-at (reduce min (map :offset mine)))
+                                       (+ body-at (reduce max (map #(+ (:offset %) (:length %))
+                                                                   mine)))]
+                               ;; No :min/:max. Ever.
+                               :stats {:rows (or (:length node) rows)
+                                       :nulls (:nulls node)}
+                               :codec (or compression :uncompressed)
+                               :buffers (mapv (fn [b] [(+ body-at (:offset b)) (:length b)]) mine)}]))
+                     names))})
+           batches)}))
+
 (defn columns
   "Column names this member has, as a set."
   [member]

@@ -16,6 +16,9 @@
                       io.github.kotoba-lang/org-apache-parquet
                       {:git/url "https://github.com/kotoba-lang/org-apache-parquet.git"
                        :git/sha "8245502682d54c2d6309286fce481eb2d8c91762"}
+                      io.github.kotoba-lang/org-apache-arrow
+                      {:git/url "https://github.com/kotoba-lang/org-apache-arrow.git"
+                       :git/sha "0be75870181f1fa3f3d5b13c031cfad814416b99"}
                       io.github.kotoba-lang/org-ietf-deflate
                       {:git/url "https://github.com/kotoba-lang/org-ietf-deflate.git"
                        :git/sha "e7558036709b673e22673fc2bbd12f3a24144e98"}

@@ -63,6 +63,50 @@ being an optimisation for later. Below ~30 objects the root costs more bytes
 than it saves; the table above prints both numbers so the crossover is
 visible rather than argued.
 
+## Aggregates cost one request and read nothing
+
+```clojure
+(require '[tana.aggregate :as agg])
+(agg/aggregate root {:agg :max :column "price" :trust :from-footers})
+;; => {:value 999299 :from :statistics :read 0 :requests 1}
+```
+
+Parquet already answers `max` from a footer with `:read 0`, so the baseline
+reads no column data either — what it cannot avoid is **opening every object
+to reach those footers**. Measured, same bench:
+
+| objects | baseline requests | tana requests |
+|---:|---:|---:|
+| 200 | 600 | **1** |
+| 1,000 | 3,000 | **1** |
+
+Every guard `columnar.aggregate` documents applies one level up, plus one
+that only exists here: **`:location-only` trust refuses.** When pruning, a
+wrong bound costs a read; in an aggregate the bound **is** the answer. A
+refusal returns `{:from :refused :reason ...}` and never a value with a quiet
+caveat — "could not" and "the answer is nothing" must not share a shape.
+
+## Arrow is the second format, and it plugs in by reporting less
+
+`member/from-arrow` takes what `arrow.ipc` returned, as data. **Arrow records
+no column bounds**, so a root over Arrow gives location and prunes nothing:
+
+```clojure
+(plan/plan root {:columns ["price"] :predicates [[:= "price" 104]] :trust :from-footers})
+;; {:chunks {:total 3 :pruned 0 :read 3 :undecidable 3}}
+(agg/aggregate root {:agg :count :trust :from-footers})        ; {:value 9 :read 0}
+(agg/aggregate root {:agg :max :column "price" :trust :from-footers})
+;; {:from :refused :reason :bounds-not-recorded}
+```
+
+`count` still answers from metadata, because row counts are not bounds. `max`
+is refused **by name** rather than invented. A mixed table prunes its Parquet
+members and reads its Arrow ones — absence in one member does not disable
+pruning for the others, and there is a test that requires exactly that.
+
+This is the same question `columnar` asked itself when it acquired a second
+format: a seam with a sample size of one is an untested claim.
+
 ## Three things it records, and dropping any one loses the saving
 
 | recorded | without it |
@@ -148,11 +192,36 @@ a Worker, a browser and a JVM test.
 
 ## Runtimes
 
-`clojure -M:test` and `npm run test:nbb` — 21 tests, 51 assertions, both
-green. Portable `.cljc`, one dependency.
+`clojure -M:test` and `npm run test:nbb` — **32 tests, 89 assertions**, both
+green. Portable `.cljc`, one runtime dependency.
 
-The suite has been shown red on three real defects and green again with each
-reverted: absent statistics permitting a skip (2 failures), `:trust`
-defaulting instead of being required (1), and a chunk range one byte too long
-(1). A gate that has only ever been green is a gate nobody has asked a
-question.
+The suite has been shown red on **six** real defects and green again with each
+reverted:
+
+| broken | failures |
+|---|---:|
+| absent statistics permit a skip | 2 |
+| `:trust` defaults instead of being required | 1 |
+| a chunk range one byte too long | 1 |
+| a predicate no longer disqualifies an aggregate fold | 1 |
+| `:location-only` trust answers an aggregate anyway | 4 |
+| the Arrow adapter invents wide-open bounds | 4 |
+
+A gate that has only ever been green is a gate nobody has asked a question.
+
+## Known, and not papered over
+
+- **The datom-plane manifest cannot produce a root on its own.**
+  `kotobase.lake.table` records object, rows, partition values and per-column
+  statistics — and **no byte ranges**. So a bridge from it still costs one
+  footer read per member. Recorded here rather than filed as done: the two
+  manifests overlap in statistics and differ in exactly the field that makes
+  the round trip go away.
+- **Aggregates over a sharded table read the manifests.** `tana.aggregate`
+  takes a root; the top alone carries per-manifest bounds and could answer
+  `min`/`max` from them, which is not implemented.
+- **Packs are orthogonal, deliberately.** ADR-2608160100 keeps columnar
+  objects out of CARv2 packs (they are large objects with footer range reads,
+  and wrapping a multi-MB column in a CAR frame doubles the indirection). A
+  range from this planner composes with a pack's range; nothing here assumes
+  either layout.

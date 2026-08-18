@@ -11,6 +11,7 @@
   Both sides compute the answer and the answers are compared. A plan that
   fetched less and answered differently is not a faster plan."
   (:require [columnar.bytes :as cbytes]
+            [columnar.aggregate]
             [columnar.plan :as cplan]
             [columnar.source :as csrc]
             [columnar.stats :as cstats]
@@ -20,6 +21,7 @@
             [parquet.write :as pw]
             [tana.chunk-only-test :as chunk]
             [tana.member :as member]
+            [tana.aggregate :as tagg]
             [tana.plan :as plan]
             [tana.shard :as shard]
             [tana.table :as table]))
@@ -104,6 +106,28 @@
      :rows (:rows below)
      :manifests (:manifests sel)}))
 
+(defn aggregate-comparison
+  "`max(price)` over the whole table, both ways.
+
+  Parquet answers `max` from a footer with `:read 0` — so the baseline reads
+  no column data either. What it cannot avoid is **opening every object** to
+  reach those footers: 3 metadata requests each. The root already holds them."
+  [objects root]
+  (let [base (reduce (fn [acc {:keys [bytes]}]
+                       (let [{:keys [log source]} (cbytes/counting (cbytes/of-vector bytes))
+                             r (columnar.aggregate/aggregate (psrc/open source)
+                                                             {:agg :max :column "price"})]
+                         (-> acc
+                             (update :requests + (count (:ranges @log)))
+                             (update :values conj (:value r)))))
+                     {:requests 0 :values []} objects)
+        t (tagg/aggregate root {:agg :max :column "price" :trust :from-footers})]
+    {:baseline-requests (:requests base)
+     :baseline-value (reduce (fn [a b] (if (pos? (compare b a)) b a)) (:values base))
+     :tana-requests (:requests t)
+     :tana-value (:value t)
+     :tana-read (:read t)}))
+
 (defn- row [label {:keys [requests bytes]}] (str label "\t" requests "\t" bytes))
 
 (defn run [n]
@@ -142,6 +166,13 @@
     (println (str "sharded / baseline\t"
                   (/ (Math/round (* 10 (/ (:requests b) (:requests s2)))) 10.0) "x requests\t"
                   (/ (Math/round (* 10 (/ (:bytes b) (:bytes s2)))) 10.0) "x bytes  (>1 = tana cheaper; below the crossover it is not)"))
+    (let [a (aggregate-comparison objects root)]
+      (when-not (= (:baseline-value a) (:tana-value a))
+        (println "AGGREGATE DIFFERS" (pr-str a))
+        (js/process.exit 1))
+      (println (str "max(price)\tbaseline " (:baseline-requests a) " requests"
+                    "\ttana " (:tana-requests a) " request, :read " (:tana-read a)
+                    "\tvalue " (:tana-value a))))
     (println)))
 
 (doseq [n [1 3 10 50 200 1000]] (run n))
