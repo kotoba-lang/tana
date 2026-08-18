@@ -10,11 +10,12 @@
             [tana.parquet-range-test]
             [tana.chunk-only-test]
             [tana.aggregate-test]
-            [tana.arrow-test]))
+            [tana.arrow-test]
+            [tana.invariant-test]))
 
 (def namespaces
   '[tana.plan-test tana.parquet-range-test tana.chunk-only-test
-    tana.aggregate-test tana.arrow-test])
+    tana.aggregate-test tana.arrow-test tana.invariant-test])
 
 (let [{:keys [fail error test]} (apply t/run-tests namespaces)]
   (when (zero? test)

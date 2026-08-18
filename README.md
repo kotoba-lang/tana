@@ -157,6 +157,28 @@ Two rules are inherited with it and are load-bearing here:
 only when **every** chunk under it reported them. Deriving a bound from the
 chunks that did report invents a claim the data never made.
 
+## Sharding changes what a query costs, never what it fetches
+
+That is a correctness claim, and cost arguments are where correctness quietly
+goes: a two-level prune that rules out a manifest whose chunks the flat plan
+would have read returns fewer rows and no error. So it is checked over
+generated tables — overlapping ranges, unbounded chunks, 40 seeds × 4 shard
+sizes × 4 predicates — rather than argued:
+
+    plan(root)  ==  plan(merge(manifests the top could not rule out))
+
+by the exact set of `(object, range)` pairs. A second test requires the shard
+layer to actually rule things out (8 disjoint members, 1 manifest fetched),
+because the invariant above would also hold for a layer that pruned nothing —
+proving a tautology is the failure mode of an invariant test.
+
+`aggregate-top` answers `count`, `min` and `max` from the top alone, and is
+checked to agree with `aggregate` over the whole root on the same tables:
+either both answer with the same value or **both refuse**. A top that
+answered where the root refused would be folding bounds the data never
+reported. It refuses `count-non-null` by name — the top does not carry null
+counts, and answering with `count` would be wrong by exactly the nulls.
+
 ## Two levels, and why they are content-addressed
 
 ```text
@@ -192,11 +214,12 @@ a Worker, a browser and a JVM test.
 
 ## Runtimes
 
-`clojure -M:test` and `npm run test:nbb` — **32 tests, 89 assertions**, both
-green. Portable `.cljc`, one runtime dependency.
+`clojure -M:test` and `npm run test:nbb` — **36 tests, 1,093 assertions**,
+both green, and green on a real fleet node (`test-tana-7394fea-murakumo-levi`,
+receipt `76d8591167ea`). Portable `.cljc`, one runtime dependency.
 
-The suite has been shown red on **six** real defects and green again with each
-reverted:
+The suite has been shown red on **eight** real defects and green again with
+each reverted:
 
 | broken | failures |
 |---|---:|
@@ -206,6 +229,8 @@ reverted:
 | a predicate no longer disqualifies an aggregate fold | 1 |
 | `:location-only` trust answers an aggregate anyway | 4 |
 | the Arrow adapter invents wide-open bounds | 4 |
+| manifest bounds derived from only the chunks that reported | **581** |
+| the top answers `count-non-null` with `count` | 1 |
 
 A gate that has only ever been green is a gate nobody has asked a question.
 
@@ -217,9 +242,10 @@ A gate that has only ever been green is a gate nobody has asked a question.
   footer read per member. Recorded here rather than filed as done: the two
   manifests overlap in statistics and differ in exactly the field that makes
   the round trip go away.
-- **Aggregates over a sharded table read the manifests.** `tana.aggregate`
-  takes a root; the top alone carries per-manifest bounds and could answer
-  `min`/`max` from them, which is not implemented.
+- **`aggregate-top` does not fall back to the manifests.** A column no
+  manifest bounds is refused rather than resolved by fetching them; a caller
+  that wants that fetches and calls `aggregate` on the merged root, which is
+  one more request and its own decision.
 - **Packs are orthogonal, deliberately.** ADR-2608160100 keeps columnar
   objects out of CARv2 packs (they are large objects with footer range reads,
   and wrapping a multi-MB column in a CAR frame doubles the indirection). A

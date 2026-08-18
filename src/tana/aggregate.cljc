@@ -98,3 +98,61 @@
                       ((if (= :min agg) stats/value-min stats/value-max) (map k usable)))
              :from :statistics :read 0 :requests 1}
             {:from :refused :reason :bounds-not-recorded}))))))
+
+(defn- top-bounds-seq [top column]
+  (map (fn [e] (get-in e [:bounds column])) (:manifests top)))
+
+(defn aggregate-top
+  "The same aggregates from a **sharded top**, without fetching a manifest.
+
+  `tana.shard/split` derives per-manifest bounds from the chunks under them,
+  and a manifest reports a column only when every chunk under it did. So the
+  top already carries what `min`/`max` need, and answering from it costs the
+  one request the query was going to make anyway — no manifest, no object.
+
+  `:count` is the exception in the other direction: the top records `:rows`
+  per manifest, so it answers too.
+
+  The guards are `aggregate`'s, and they are applied to the same values —
+  a manifest that reports no bounds for a column disqualifies the fold for
+  the same reason one unbounded chunk does. What is *not* here is a fallback
+  to the manifests: a caller that wants that fetches them and calls
+  `aggregate` on the merged root, which is one more request and its own
+  decision to make."
+  [top {:keys [agg column predicates trust]}]
+  (cond
+    (empty? (:manifests top))
+    {:from :refused :reason :no-manifests}
+
+    (seq predicates)
+    {:from :refused :reason :predicate-disqualifies-statistics}
+
+    (= :sum agg)
+    {:from :refused :reason :sum-is-not-derivable-from-bounds}
+
+    (not (contains? from-statistics agg))
+    {:from :refused :reason :unknown-aggregate}
+
+    (= :location-only trust)
+    {:from :refused :reason :bounds-not-trusted}
+
+    (and (= :from-footers trust) (not= :from-footers (:bounds-authority top)))
+    {:from :refused :reason :bounds-not-trusted}
+
+    (= :count agg)
+    {:value (reduce + 0 (map :rows (:manifests top)))
+     :from :statistics :read 0 :requests 1}
+
+    (= :count-non-null agg)
+    ;; The top does not carry null counts -- `shard/column-bounds` folds
+    ;; min/max/rows and stops there. Refused by name rather than answered
+    ;; with :count, which would be off by exactly the nulls.
+    {:from :refused :reason :null-counts-not-in-top}
+
+    :else
+    (let [bs (top-bounds-seq top column)
+          k (if (= :min agg) :min :max)]
+      (if (every? #(contains? % k) bs)
+        {:value ((if (= :min agg) stats/value-min stats/value-max) (map k bs))
+         :from :statistics :read 0 :requests 1}
+        {:from :refused :reason :bounds-not-recorded}))))
