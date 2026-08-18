@@ -234,6 +234,24 @@ each reverted:
 
 A gate that has only ever been green is a gate nobody has asked a question.
 
+## The two runtimes now provably test the same versions
+
+`npm run test:nbb` puts sibling **checkouts** on the classpath while
+`deps.edn` pins **shas**, and those drift. Measured here on 2026-08-18: the
+`columnar` checkout was 4 commits behind the pin and 13 days older, so "JVM
+and nbb are both green" was a claim about two different columnars. The runner
+now reads the pins out of `deps.edn`, compares them to the checkouts, and
+**exits 2** — neither pass nor fail — with the table and the `west update`
+line that fixes it. `TANA_ALLOW_PIN_DRIFT=1` runs anyway, for a deliberate
+cross-version run.
+
+Root ADR-2608180100 (git dep pin diamonds) is the same failure one level out,
+and this closure has one: **three `columnar` shas are declared** — tana's
+`5e165f0` (the tip), `org-apache-parquet`'s `d89813a`, `org-apache-arrow`'s
+`16b336b`. `tools.deps` resolves them to one, which is why the JVM run is
+green and why the duplication is invisible from inside. Named here because it
+is upstream of this repo and not fixable from it.
+
 ## Known, and not papered over
 
 - **The datom-plane manifest cannot produce a root on its own.**
