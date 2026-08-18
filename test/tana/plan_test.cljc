@@ -1,0 +1,151 @@
+(ns tana.plan-test
+  (:require [clojure.test :refer [deftest is testing]]
+            [tana.member :as member]
+            [tana.plan :as plan]
+            [tana.shard]
+            [tana.table :as table]))
+
+(defn- chunk-of [col lo hi at len]
+  {:rows 3 :columns {col {:range [at (+ at len)]
+                          :stats {:rows 3 :min lo :max hi}
+                          :codec :uncompressed}}})
+
+(defn- unbounded-chunk [col at len]
+  {:rows 3 :columns {col {:range [at (+ at len)] :stats {:rows 3} :codec :uncompressed}}})
+
+(defn- member-of [object chunks]
+  {:object object :size 4096 :rows (reduce + (map :rows chunks)) :chunks chunks})
+
+(def t
+  (table/table
+   {:table "prices" :columns ["price"] :bounds-authority :from-footers
+    :members [(member-of "obj:a" [(chunk-of "price" 10 30 4 100)])
+              (member-of "obj:b" [(chunk-of "price" 100 130 4 100)])
+              (member-of "obj:c" [(chunk-of "price" 500 900 4 100)])]}))
+
+(deftest prunes-members-without-opening-them
+  (let [p (plan/plan t {:columns ["price"] :predicates [[:= "price" 120]]
+                        :trust :from-footers})]
+    (is (= 1 (count (:fetch p))))
+    (is (= "obj:b" (:object (first (:fetch p)))))
+    (is (= {:total 3 :pruned 2 :read 1 :undecidable 0} (:chunks p)))
+    ;; the root, plus one ranged GET
+    (is (= 2 (:rounds p)))))
+
+(deftest absent-bounds-never-permit-a-skip
+  (let [t' (table/table (assoc t :members (conj (vec (:members t))
+                                                (member-of "obj:d" [(unbounded-chunk "price" 4 100)]))))
+        p (plan/plan t' {:columns ["price"] :predicates [[:= "price" 120]]
+                         :trust :from-footers})]
+    (is (= #{"obj:b" "obj:d"} (set (map :object (:fetch p)))))
+    (testing "and it is reported as undecidable, not as a prune"
+      (is (= {:total 4 :pruned 2 :read 2 :undecidable 1} (:chunks p))))))
+
+(deftest trust-is-required-and-has-no-default
+  (is (thrown? #?(:clj Exception :cljs :default)
+               (plan/plan t {:columns ["price"] :predicates [] })))
+  (testing "location-only disables pruning rather than silently keeping it"
+    (let [p (plan/plan t {:columns ["price"] :predicates [[:= "price" 120]]
+                          :trust :location-only})]
+      (is (= 3 (count (:fetch p))))
+      (is (= :disabled-by-trust (:pruning p)))
+      (is (= 0 (get-in p [:chunks :pruned]))))))
+
+(deftest declared-bounds-are-not-trusted-by-a-from-footers-caller
+  (let [declared (table/table (assoc t :bounds-authority :declared))]
+    (is (= :disabled-by-trust
+           (:pruning (plan/plan declared {:columns ["price"]
+                                          :predicates [[:= "price" 120]]
+                                          :trust :from-footers}))))
+    (is (= :enabled
+           (:pruning (plan/plan declared {:columns ["price"]
+                                          :predicates [[:= "price" 120]]
+                                          :trust :declared}))))))
+
+(deftest a-table-must-declare-where-its-bounds-came-from
+  (is (thrown? #?(:clj Exception :cljs :default)
+               (table/table {:table "x" :columns ["price"] :members []}))))
+
+(deftest no-members-is-refused-not-answered-as-empty
+  (let [empty-t (table/table {:table "prices" :columns ["price"]
+                              :bounds-authority :from-footers :members []})
+        p (plan/plan empty-t {:columns ["price"] :predicates [] :trust :from-footers})]
+    (is (= :no-members (:refused p)))
+    (is (nil? (:fetch p)))))
+
+(deftest unknown-column-is-refused-before-it-becomes-a-range
+  (is (thrown? #?(:clj Exception :cljs :default)
+               (plan/plan t {:columns ["nope"] :predicates [] :trust :from-footers}))))
+
+(deftest adjacent-ranges-in-one-object-become-one-request
+  (let [two {:object "obj:x" :size 4096 :rows 3
+             :chunks [{:rows 3
+                       :columns {"price" {:range [4 104] :stats {:rows 3 :min 1 :max 9}
+                                          :codec :uncompressed}
+                                 "qty"   {:range [104 204] :stats {:rows 3 :min 1 :max 9}
+                                          :codec :uncompressed}}}]}
+        t' (table/table {:table "t" :columns ["price" "qty"]
+                         :bounds-authority :from-footers :members [two]})
+        p (plan/plan t' {:columns ["price" "qty"] :predicates [] :trust :from-footers})]
+    (is (= 1 (count (:fetch p))))
+    (is (= [4 204] (:range (first (:fetch p)))))
+    (is (= 2 (count (:covers (first (:fetch p))))))
+    (is (= 100 (- 204 104)))))
+
+(deftest an-unreadable-codec-is-refused-before-the-download
+  (let [m {:object "obj:z" :size 4096 :rows 3
+           :chunks [{:rows 3 :columns {"price" {:range [4 104]
+                                                :stats {:rows 3 :min 1 :max 9}
+                                                :codec :brotli}}}]}
+        t' (table/table {:table "t" :columns ["price"]
+                         :bounds-authority :from-footers :members [m]})
+        p (plan/plan t' {:columns ["price"] :predicates [] :trust :from-footers
+                         :readable-codecs #{:uncompressed :snappy :gzip :zstd}})]
+    (is (empty? (:fetch p)))
+    (is (= :unreadable-codec (:reason (first (:refused p)))))))
+
+(deftest the-root-address-is-stable-across-rebuilds
+  (let [h (fn [s] (str "sha-" (hash s)))]
+    (is (= (table/address h t)
+           (table/address h (table/table (into {} t)))))))
+
+(deftest append-does-not-disturb-the-old-root
+  (let [t2 (table/append t [(member-of "obj:d" [(chunk-of "price" 1000 2000 4 100)])])]
+    (is (= 3 (count (:members t))))
+    (is (= 4 (count (:members t2))))))
+
+(deftest a-member-needs-an-address-and-a-size
+  (is (thrown? #?(:clj Exception :cljs :default)
+               (member/from-parquet-footer {:size 10} {:columns [] :row-groups []})))
+  (is (thrown? #?(:clj Exception :cljs :default)
+               (member/from-parquet-footer {:object "obj:a"} {:columns [] :row-groups []}))))
+
+(deftest a-manifest-is-unbounded-when-any-chunk-under-it-is
+  (testing "absence propagates upward instead of being derived away"
+    (let [bounded (member-of "obj:a" [(chunk-of "price" 10 30 4 100)])
+          unbounded (member-of "obj:b" [(unbounded-chunk "price" 4 100)])
+          t' (table/table {:table "t" :columns ["price"] :bounds-authority :from-footers
+                           :members [bounded unbounded]})
+          {:keys [top]} (tana.shard/split (fn [s] (str "h" (hash s))) t' 2)
+          entry (first (:manifests top))]
+      (is (nil? (get-in entry [:bounds "price"])))
+      (testing "so the manifest is fetched, not pruned"
+        (let [sel (plan/select-manifests top {:predicates [[:= "price" 999]]
+                                              :trust :from-footers})]
+          (is (= 1 (count (:fetch sel))))
+          (is (= 1 (get-in sel [:manifests :undecidable]))))))))
+
+(deftest a-manifest-whose-bounds-exclude-the-predicate-is-not-fetched
+  (let [t' (table/table {:table "t" :columns ["price"] :bounds-authority :from-footers
+                         :members [(member-of "obj:a" [(chunk-of "price" 10 30 4 100)])
+                                   (member-of "obj:b" [(chunk-of "price" 900 999 4 100)])]})
+        {:keys [top]} (tana.shard/split (fn [s] (str "h" (hash s))) t' 1)
+        sel (plan/select-manifests top {:predicates [[:= "price" 950]] :trust :from-footers})]
+    (is (= 1 (count (:fetch sel))))
+    (is (= {:total 2 :pruned 1 :read 1 :undecidable 0} (:manifests sel)))))
+
+(deftest no-manifests-is-refused-not-answered-as-empty
+  (let [sel (plan/select-manifests {:table "t" :columns ["price"]
+                                    :bounds-authority :from-footers :manifests []}
+                                   {:predicates [] :trust :from-footers})]
+    (is (= :no-manifests (:refused sel)))))

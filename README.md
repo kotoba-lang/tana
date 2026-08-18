@@ -1,0 +1,158 @@
+# tana
+
+**棚 — the shelf that says which box, so you open one.**
+
+`tana` is the table plane between a set of columnar objects and a query: a
+content-addressed root that carries what every object's footer said **and
+where every column chunk is**, so a predicate becomes byte ranges without
+opening anything.
+
+```clojure
+(require '[tana.member :as member] '[tana.table :as table] '[tana.plan :as plan])
+
+;; Build once, at publish time: a footer, as data.
+(def m (member/from-parquet-footer {:object cid :size n} (parquet.footer/parse bytes)))
+
+(def root (table/table {:table "prices" :columns ["price"]
+                        :bounds-authority :from-footers :members [m ...]}))
+
+;; Query time: no object is opened.
+(plan/plan root {:columns ["price"] :predicates [[:= "price" 104]]
+                 :trust :from-footers})
+;; => {:fetch [{:object "obj:mid" :range [51 98] :covers [...]}]
+;;     :rounds 2 :bytes 47
+;;     :chunks {:total 9 :pruned 8 :read 1 :undecidable 0}
+;;     :pruning :enabled}
+```
+
+## What it is for
+
+CARv2 answers *where a block is*. Parquet and Arrow answer *how a table is
+encoded*. Neither answers the question a lake query actually asks:
+
+> which of these thousand objects do I have to read?
+
+Today that answer lives in a thousand footers, and reading them is the cost.
+`net-kotobase/lake` measures four round trips for **one** 2.4 KB object —
+leading magic, the 8-byte tail, the footer, then the column chunk — and three
+of those four are metadata. Multiply by the objects a partitioned table has
+and the metadata dominates the answer.
+
+A table root is those footers, already read, in one addressable value.
+
+## Measured
+
+`npm run bench:rounds` — a table of N objects × 300 rows × 3 row groups with
+disjoint ranges, `price = k`, both paths computing the answer and the answers
+compared. Requests, because on a Worker or a browser a request is a round
+trip and bytes are cheap by comparison.
+
+| objects | baseline requests | sharded requests | baseline bytes | sharded bytes |
+|---:|---:|---:|---:|---:|
+| 1 | 4 | 3 | 1,108 | 1,789 |
+| 10 | 31 | 3 | 3,637 | 7,971 |
+| 50 | 151 | 3 | 14,877 | 23,325 |
+| 200 | 601 | 3 | 57,027 | 24,143 |
+| **1,000** | **3,001** | **3** | **281,827** | **26,891** |
+
+Requests go flat. **Bytes do not, and the flat root is a trap:** it is
+O(members × chunks × columns), about 700 bytes per member here, so at 1,000
+objects a single root is 699 KB — worse than reading every footer. That is
+what `tana.shard` is for, and the crossover is why it exists rather than
+being an optimisation for later. Below ~30 objects the root costs more bytes
+than it saves; the table above prints both numbers so the crossover is
+visible rather than argued.
+
+## Three things it records, and dropping any one loses the saving
+
+| recorded | without it |
+|---|---|
+| statistics (`:min` `:max` `:rows`) | nothing prunes; every object is opened |
+| byte range `[start end)` | you know *which* object, not *which bytes* — the footer fetch comes back |
+| `:type` `:codec` `:def-level` `:data-at` | the chunk's bytes are not decodable alone — the footer fetch comes back |
+
+The third row is the one that is easy to miss. `tana.chunk-only-test` decodes
+a planned range with `parquet.decode` directly and no footer at any point,
+because a plan that still needs a footer saved one request and spent three.
+
+## `:bounds-authority` and `:trust` have no defaults
+
+Statistics read out of an object at query time are as trustworthy as the
+object. Statistics read out of a root are as trustworthy as **whoever wrote
+the root**, and the failure is not symmetric:
+
+- bounds **too wide** → an unnecessary read. A cost.
+- bounds **too narrow** → rows are deleted from the answer. Silent, with no
+  error, and indistinguishable from a table that simply had no such rows.
+
+So a root declares `:from-footers` or `:declared`, a plan declares what it
+will trust, and neither has a default. `:location-only` is the honest third
+option: use the root to find bytes, prune nothing. `kotobase-storage` refuses
+a backend that declares no ref profile for the same reason — **guessing is
+silent, and an ignored precondition returns success.**
+
+## The pruning rule is borrowed, never copied
+
+`columnar.stats/skip?` decides, at both levels — chunks in `tana.plan`, and
+manifests in `tana.shard`, which presents manifest bounds in the same shape.
+A second copy of a pruning rule drifts in the worst direction: under-fetching
+throws (loud), while pruning by a stale copy reads chunks the real planner
+would have skipped and **still returns the correct answer**. The bug is
+invisible in every result and visible only in the bill.
+
+Two rules are inherited with it and are load-bearing here:
+
+- **Absent statistics never permit a skip.** A chunk with no bounds is read,
+  and counted as `:undecidable` — never as `:pruned`. A planner reporting
+  `0 read` because it could not decide anything looks exactly like one that
+  pruned everything.
+- **Pruning decides what to read, never what matches.** Bounds may be wider
+  than the data; every fetched chunk still has the predicate applied exactly.
+
+`tana.shard` extends the first upward: a manifest reports bounds for a column
+only when **every** chunk under it reported them. Deriving a bound from the
+chunks that did report invents a claim the data never made.
+
+## Two levels, and why they are content-addressed
+
+```text
+top          one small object: per-manifest bounds
+ └─ manifest per-member statistics and byte ranges
+      └─ object   the Parquet / Arrow file itself
+```
+
+Iceberg's manifest-list/manifest split has this shape, from the same
+pressure. What differs is that every level here is content-addressed, so a
+reader pins one address and **cannot observe a half-published table** — there
+is no catalog service holding a mutable pointer to the current snapshot, and
+a snapshot names its members explicitly rather than being "whatever existed
+at time T".
+
+`tana.plan/select-manifests` is pure: it returns the addresses to fetch and
+the caller fetches them. Keeping IO out is what lets the same planner run in
+a Worker, a browser and a JVM test.
+
+## What it is not
+
+- **Not a file format.** Chunks stay Parquet or Arrow. Inventing a columnar
+  encoding here would be re-inventing a small Parquet, badly.
+- **Not a container.** Where an object lives — one object per CID, or a
+  CARv2 pack with an offset — is `kotobase-storage`'s question. A range from
+  this planner composes with a pack's range; it does not replace it.
+- **Not a catalog.** `kotobase-lake` records what landed and who claimed
+  what, on the datom plane, and answers that with Datalog. This answers one
+  narrower question from one self-describing value, which is what a browser
+  holding a bucket URL can use.
+- **Not a query engine.** `columnar` decodes and filters. This hands it less
+  to decode.
+
+## Runtimes
+
+`clojure -M:test` and `npm run test:nbb` — 21 tests, 51 assertions, both
+green. Portable `.cljc`, one dependency.
+
+The suite has been shown red on three real defects and green again with each
+reverted: absent statistics permitting a skip (2 failures), `:trust`
+defaulting instead of being required (1), and a chunk range one byte too long
+(1). A gate that has only ever been green is a gate nobody has asked a
+question.
