@@ -19,16 +19,16 @@
 
 (deftest count-min-max-cost-no-object-read
   (is (= {:value 9 :from :statistics :read 0 :requests 1}
-         (agg/aggregate t {:agg :count :trust :from-footers})))
-  (is (= 10 (:value (agg/aggregate t {:agg :min :column "price" :trust :from-footers}))))
-  (is (= 900 (:value (agg/aggregate t {:agg :max :column "price" :trust :from-footers}))))
+         (agg/aggregate t {:agg :count :trust :local})))
+  (is (= 10 (:value (agg/aggregate t {:agg :min :column "price" :trust :local}))))
+  (is (= 900 (:value (agg/aggregate t {:agg :max :column "price" :trust :local}))))
   (is (= 8 (:value (agg/aggregate t {:agg :count-non-null :column "price"
-                                     :trust :from-footers})))))
+                                     :trust :local})))))
 
 (deftest a-predicate-disqualifies-the-fold
   (testing "bounds describe every row; a filter selects some of them"
     (is (= :predicate-disqualifies-statistics
-           (:reason (agg/aggregate t {:agg :max :column "price" :trust :from-footers
+           (:reason (agg/aggregate t {:agg :max :column "price" :trust :local
                                       :predicates [[:> "price" 100]]}))))))
 
 (deftest one-chunk-without-bounds-disqualifies-them-all
@@ -36,28 +36,32 @@
                                                 {:object "obj:c" :size 9 :rows 3
                                                  :chunks [(chunk-of nil nil 3 0)]})))]
     (is (= :bounds-not-recorded
-           (:reason (agg/aggregate t' {:agg :max :column "price" :trust :from-footers}))))
+           (:reason (agg/aggregate t' {:agg :max :column "price" :trust :local}))))
     (testing "but count still answers — row counts are not bounds"
-      (is (= 12 (:value (agg/aggregate t' {:agg :count :trust :from-footers})))))))
+      (is (= 12 (:value (agg/aggregate t' {:agg :count :trust :local})))))))
+
+(def ^:private sign-fn (fn [payload] (str "sig:" (hash payload))))
+(def ^:private verify-fn (fn [_ payload sig] (= sig (str "sig:" (hash payload)))))
+(defn- signed [root] (table/verify (table/sign root sign-fn "did:key:zPublisher") verify-fn))
 
 (deftest bounds-not-trusted-refuses-rather-than-answering
   (testing "a wrong bound costs a read when pruning; it IS the answer here"
     (is (= :bounds-not-trusted
            (:reason (agg/aggregate t {:agg :max :column "price" :trust :location-only}))))
     (is (= :bounds-not-trusted
-           (:reason (agg/aggregate (table/table (assoc t :bounds-authority :declared))
+           (:reason (agg/aggregate (signed (table/table (assoc t :bounds-authority :declared)))
                                    {:agg :max :column "price" :trust :from-footers}))))))
 
 (deftest sum-is-refused-by-name
   (is (= :sum-is-not-derivable-from-bounds
-         (:reason (agg/aggregate t {:agg :sum :column "price" :trust :from-footers})))))
+         (:reason (agg/aggregate t {:agg :sum :column "price" :trust :local})))))
 
 (deftest a-refusal-never-looks-like-a-value
   (doseq [r [(agg/aggregate t {:agg :max :column "price" :trust :location-only})
-             (agg/aggregate t {:agg :sum :column "price" :trust :from-footers})
+             (agg/aggregate t {:agg :sum :column "price" :trust :local})
              (agg/aggregate (table/table {:table "t" :columns ["price"]
                                           :bounds-authority :from-footers :members []})
-                            {:agg :count :trust :from-footers})]]
+                            {:agg :count :trust :local})]]
     (is (= :refused (:from r)))
     (is (not (contains? r :value)))
     (is (keyword? (:reason r)))))
@@ -68,6 +72,6 @@
                                                      (chunk-of 99 99 3 3)]}]))]
     (testing "nil is not a small number"
       (is (= 10 (:value (agg/aggregate t' {:agg :min :column "price"
-                                           :trust :from-footers}))))
+                                           :trust :local}))))
       (is (= 30 (:value (agg/aggregate t' {:agg :max :column "price"
-                                           :trust :from-footers})))))))
+                                           :trust :local})))))))

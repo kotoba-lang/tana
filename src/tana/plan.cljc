@@ -33,7 +33,11 @@
   (:require [columnar.stats :as stats]))
 
 (def ^:private trusts
-  {:from-footers #{:from-footers}
+  {;; A root this process produced. Trusting your own output needs no
+   ;; signature; trusting one that arrived over a wire does, which is the
+   ;; distinction `:from-footers` alone could not express.
+   :local        #{:from-footers :declared}
+   :from-footers #{:from-footers}
    ;; A caller that trusts declared bounds trusts extracted ones too: the
    ;; extracted case is strictly the stronger claim.
    :declared     #{:from-footers :declared}
@@ -90,7 +94,12 @@
   (let [entries (vec (:manifests top))]
     (if (empty? entries)
       {:refused :no-manifests :table (:table top)}
-      (let [trusted? (contains? (trusts trust) (:bounds-authority top))
+      ;; A sharded top carries per-manifest bounds, so it is the same trust
+      ;; question one level up: an unsigned top that arrived over a wire can
+      ;; rule out a manifest whose members would have matched, and the reader
+      ;; never fetches the bytes that would say so.
+      (let [signed? (or (= :local trust) (some? (:table/verified-signer top)))
+            trusted? (and signed? (contains? (trusts trust) (:bounds-authority top)))
             preds (if trusted? (vec predicates) [])
             acc (reduce
                  (fn [acc entry]
@@ -110,7 +119,9 @@
         {:fetch (:fetch acc)
          :manifests {:total (count entries) :pruned (:pruned acc)
                      :read (:read acc) :undecidable (:undecidable acc)}
-         :pruning (if trusted? :enabled :disabled-by-trust)}))))
+         :pruning (cond trusted? :enabled
+                        (not signed?) :disabled-unverified-root
+                        :else :disabled-by-trust)}))))
 
 (defn plan
   "A fetch plan for `query` over `root`.
@@ -138,7 +149,10 @@
                 (throw (ex-info "column not in this table"
                                 {:type :tana/unknown-column
                                  :columns (vec unknown) :table (:columns root)})))
-            trusted? (contains? (trusts trust) (:bounds-authority root))
+            ;; A fetched root's bounds are only as good as its signature.
+            ;; `:local` is the caller saying it made this root itself.
+            signed? (or (= :local trust) (some? (:table/verified-signer root)))
+            trusted? (and signed? (contains? (trusts trust) (:bounds-authority root)))
             preds (if trusted? (vec predicates) [])
             init {:fetch [] :refused [] :pruned 0 :read 0 :undecidable 0
                   :members-pruned 0 :chunks 0}
@@ -189,6 +203,8 @@
                   :read (:read acc)
                   :undecidable (:undecidable acc)}
          :members {:total (count members)}
-         :pruning (if trusted? :enabled :disabled-by-trust)
+         :pruning (cond trusted? :enabled
+                        (not signed?) :disabled-unverified-root
+                        :else :disabled-by-trust)
          :trust trust
          :bounds-authority (:bounds-authority root)}))))

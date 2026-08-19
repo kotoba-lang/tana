@@ -59,7 +59,7 @@
           per [1 2 3 7]
           v [5 55 105 305]]
     (let [root (gen-table seed)
-          query {:columns ["price"] :predicates [[:= "price" v]] :trust :from-footers}
+          query {:columns ["price"] :predicates [[:= "price" v]] :trust :local}
           flat (set (map (juxt :object :range) (:fetch (plan/plan root query))))
           {:keys [ranges]} (sharded-fetch root per query)]
       (is (= flat ranges)
@@ -79,7 +79,7 @@
                                               :codec :uncompressed :type :int64}}}]}))
           root (table/table {:table "t" :columns ["price"]
                              :bounds-authority :from-footers :members members})
-          q {:columns ["price"] :predicates [[:= "price" 3500]] :trust :from-footers}
+          q {:columns ["price"] :predicates [[:= "price" 3500]] :trust :local}
           s (sharded-fetch root 1 q)]
       (is (= 8 (:manifests-total s)))
       (is (= 1 (:manifests-read s)))
@@ -89,20 +89,20 @@
   (doseq [seed (range 1 41) per [1 3 7]]
     (let [root (gen-table seed)
           {:keys [top]} (shard/split (fn [s] (str "h" (hash s))) root per)
-          from-root (agg/aggregate root {:agg :max :column "price" :trust :from-footers})
-          from-top (agg/aggregate-top top {:agg :max :column "price" :trust :from-footers})]
+          from-root (agg/aggregate root {:agg :max :column "price" :trust :local})
+          from-top (agg/aggregate-top top {:agg :max :column "price" :trust :local})]
       (testing (str "seed=" seed " per=" per)
         ;; Either both answer with the same value, or both refuse. A top that
         ;; answers where the root refused would be folding bounds the data
         ;; never reported.
         (is (= (:from from-root) (:from from-top)))
         (is (= (:value from-root) (:value from-top))))
-      (is (= (:value (agg/aggregate root {:agg :count :trust :from-footers}))
-             (:value (agg/aggregate-top top {:agg :count :trust :from-footers})))))))
+      (is (= (:value (agg/aggregate root {:agg :count :trust :local}))
+             (:value (agg/aggregate-top top {:agg :count :trust :local})))))))
 
 (deftest the-top-refuses-count-non-null-rather-than-answering-count
   (let [root (gen-table 7)
         {:keys [top]} (shard/split (fn [s] (str "h" (hash s))) root 3)]
     (is (= :null-counts-not-in-top
            (:reason (agg/aggregate-top top {:agg :count-non-null :column "price"
-                                            :trust :from-footers}))))))
+                                            :trust :local}))))))

@@ -72,7 +72,7 @@
         root (table/table {:table "prices" :columns ["price"]
                            :bounds-authority :from-footers :members members})
         p (plan/plan root {:columns ["price"] :predicates [[:= "price" 104]]
-                           :trust :from-footers})]
+                           :trust :local})]
     (testing "9 chunks across 3 objects; one survives"
       (is (= 9 (get-in p [:chunks :total])))
       (is (= 8 (get-in p [:chunks :pruned])))
@@ -87,7 +87,7 @@
         root (table/table {:table "prices" :columns ["price"]
                            :bounds-authority :from-footers :members [m]})
         p (plan/plan root {:columns ["price"] :predicates [[:= "price" 104]]
-                           :trust :from-footers})
+                           :trust :local})
         ;; not `range`: shadowing clojure.core/range here turned a later
         ;; (range 3) into a vector lookup and cost a debugging session.
         [s e] (:range (first (:fetch p)))
@@ -110,7 +110,7 @@
           root (table/table {:table "prices" :columns ["price"]
                              :bounds-authority :from-footers :members [widened]})
           p (plan/plan root {:columns ["price"] :predicates [[:= "price" 900000]]
-                             :trust :from-footers})]
+                             :trust :local})]
       ;; The widened chunk survives pruning — it must, the bound permits it —
       ;; and the engine that decodes it finds no matching row. Over-reading is
       ;; a cost. Under-reading would be a wrong answer.

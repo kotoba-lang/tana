@@ -65,7 +65,7 @@
                    ["obj:mid"  (mapv (fn [i] {"price" (+ 100 i)}) (range 9))]
                    ["obj:high" (mapv (fn [i] {"price" (+ 500 i)}) (range 9))]])
         p (plan/plan root {:columns ["price"] :predicates [[:= "price" 104]]
-                           :trust :from-footers})
+                           :trust :local})
         fetch (first (:fetch p))
         [s e] (:range fetch)
         ;; The one request the plan asked for. Nothing else of any object is
@@ -90,7 +90,7 @@
     (let [{:keys [bytes root]}
           (table-of [["obj:mid" (mapv (fn [i] {"price" (+ 100 i)}) (range 9))]])
           p (plan/plan root {:columns ["price"] :predicates [[:= "price" 104]]
-                             :trust :from-footers})
+                             :trust :local})
           [s e] (:range (first (:fetch p)))
           fetched (subvec (vec (get bytes "obj:mid")) s e)
           member (first (:members root))

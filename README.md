@@ -119,6 +119,33 @@ The third row is the one that is easy to miss. `tana.chunk-only-test` decodes
 a planned range with `parquet.decode` directly and no footer at any point,
 because a plan that still needs a footer saved one request and spent three.
 
+## A fetched root must be signed before its bounds are believed
+
+`table/sign` puts one signature over the canonical bytes, which covers the
+statistics, the byte ranges and the member list transitively; for a sharded
+table the top's signature covers every manifest, because the top names them
+by digest.
+
+**Why a root needs this when a pack's tip does not.**
+`kotobase-storage-pack` leaves its tip unsigned and is right to: every block
+leaving a pack is rehashed against the CID that was asked for, so a planted
+tip costs a lookup that *fails*. Statistics have no such backstop — a bound
+that is too narrow means the reader **never fetches the bytes that would
+disprove it**, and the rows are simply absent, with no error and nothing to
+re-hash.
+
+So `plan` refuses to fold bounds from a root that is not marked verified:
+
+| `:trust` | means |
+|---|---|
+| `:local` | I produced this root in this process |
+| `:from-footers` / `:declared` | …and it carries a signature this caller verified |
+| `:location-only` | use it to find bytes, prune nothing |
+
+An unverified root reports `:pruning :disabled-unverified-root` and every
+chunk is read — slower, and correct. Tampering with a bound, a byte range or
+the member list all fail verification, and each is a test.
+
 ## `:bounds-authority` and `:trust` have no defaults
 
 Statistics read out of an object at query time are as trustworthy as the
@@ -214,7 +241,7 @@ a Worker, a browser and a JVM test.
 
 ## Runtimes
 
-`clojure -M:test` and `npm run test:nbb` — **36 tests, 1,093 assertions**,
+`clojure -M:test` and `npm run test:nbb` — **39 tests, 1,105 assertions**,
 both green, and green on a real fleet node (`test-tana-7394fea-murakumo-levi`,
 receipt `76d8591167ea`). Portable `.cljc`, one runtime dependency.
 

@@ -42,7 +42,7 @@
         root (table/table {:table "prices" :columns ["price"]
                            :bounds-authority :from-footers :members [m]})
         p (plan/plan root {:columns ["price"] :predicates [[:= "price" 104]]
-                           :trust :from-footers})]
+                           :trust :local})]
     (testing "every chunk is read, and every one is counted as undecidable"
       (is (= 3 (get-in p [:chunks :total])))
       (is (= 0 (get-in p [:chunks :pruned])))
@@ -58,13 +58,13 @@
         root (table/table {:table "prices" :columns ["price"] :bounds-authority :from-footers
                            :members [(member/from-arrow {:object "arw:a" :size (count bs)}
                                                         (describe bs))]})]
-    (is (= 9 (:value (agg/aggregate root {:agg :count :trust :from-footers}))))
+    (is (= 9 (:value (agg/aggregate root {:agg :count :trust :local}))))
     (is (= 9 (:value (agg/aggregate root {:agg :count-non-null :column "price"
-                                          :trust :from-footers}))))
+                                          :trust :local}))))
     (testing "max is refused by name rather than invented"
       (is (= :bounds-not-recorded
              (:reason (agg/aggregate root {:agg :max :column "price"
-                                           :trust :from-footers})))))))
+                                           :trust :local})))))))
 
 (deftest recorded-range-covers-what-the-arrow-reader-fetches
   (let [bs (arrow-file rows)
@@ -101,7 +101,7 @@
           root (table/table {:table "prices" :columns ["price"] :bounds-authority :from-footers
                              :members [arrow-m bounded]})
           p (plan/plan root {:columns ["price"] :predicates [[:= "price" 104]]
-                             :trust :from-footers})]
+                             :trust :local})]
       (is (= 1 (get-in p [:chunks :pruned])))
       (is (= 3 (get-in p [:chunks :undecidable])))
       (is (= #{"arw:a"} (set (map :object (:fetch p))))))))

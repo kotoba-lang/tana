@@ -115,3 +115,44 @@
   this one runs on all of them."
   [hash-fn root]
   (hash-fn (canonical root)))
+
+;; ── signing a root ──────────────────────────────────────────────────────────
+
+(defn sign
+  "Attach a signature over the root's canonical bytes.
+
+  One signature covers everything transitively: the statistics, the byte
+  ranges and the member list are all inside `canonical`. For a sharded table
+  the top's signature covers every manifest, because the top names them by
+  digest.
+
+  ## Why a root needs this when a pack's tip does not
+
+  `kotobase-storage-pack` leaves its tip object unsigned, and it is right to:
+  every block leaving a pack is rehashed against the CID that was asked for,
+  so a planted tip costs a lookup that FAILS. It cannot produce a block that
+  is wrong.
+
+  **Statistics have no such backstop.** A bound that is too narrow means the
+  reader never fetches the bytes that would disprove it — the rows are simply
+  absent from the answer, with no error and nothing to re-hash. So the one
+  thing this plane cannot do without a signature is trust a root it did not
+  produce."
+  [root sign-fn signer]
+  (assoc root
+         :table/signer signer
+         :table/signature (sign-fn (canonical (dissoc root :table/signer :table/signature
+                                                        :table/verified-signer)))))
+
+(defn verify
+  "-> the root marked verified, or nil.
+
+  nil rather than a throw: a root that fails verification is one a caller
+  should treat as absent, and `tana.plan` refuses to fold bounds from a root
+  that is not marked."
+  [root verify-fn]
+  (let [signer (:table/signer root)
+        sig (:table/signature root)
+        payload (canonical (dissoc root :table/signer :table/signature :table/verified-signer))]
+    (when (and signer sig (verify-fn signer payload sig))
+      (assoc root :table/verified-signer signer))))

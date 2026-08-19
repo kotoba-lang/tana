@@ -25,7 +25,7 @@
 
 (deftest prunes-members-without-opening-them
   (let [p (plan/plan t {:columns ["price"] :predicates [[:= "price" 120]]
-                        :trust :from-footers})]
+                        :trust :local})]
     (is (= 1 (count (:fetch p))))
     (is (= "obj:b" (:object (first (:fetch p)))))
     (is (= {:total 3 :pruned 2 :read 1 :undecidable 0} (:chunks p)))
@@ -36,31 +36,37 @@
   (let [t' (table/table (assoc t :members (conj (vec (:members t))
                                                 (member-of "obj:d" [(unbounded-chunk "price" 4 100)]))))
         p (plan/plan t' {:columns ["price"] :predicates [[:= "price" 120]]
-                         :trust :from-footers})]
+                         :trust :local})]
     (is (= #{"obj:b" "obj:d"} (set (map :object (:fetch p)))))
     (testing "and it is reported as undecidable, not as a prune"
       (is (= {:total 4 :pruned 2 :read 2 :undecidable 1} (:chunks p))))))
+
+(def ^:private sign-fn (fn [payload] (str "sig:" (hash payload))))
+(def ^:private verify-fn (fn [_signer payload sig] (= sig (str "sig:" (hash payload)))))
+(defn- signed [root] (table/verify (table/sign root sign-fn "did:key:zPublisher") verify-fn))
 
 (deftest trust-is-required-and-has-no-default
   (is (thrown? #?(:clj Exception :cljs :default)
                (plan/plan t {:columns ["price"] :predicates [] })))
   (testing "location-only disables pruning rather than silently keeping it"
-    (let [p (plan/plan t {:columns ["price"] :predicates [[:= "price" 120]]
-                          :trust :location-only})]
+    (let [p (plan/plan (signed t) {:columns ["price"] :predicates [[:= "price" 120]]
+                                   :trust :location-only})]
       (is (= 3 (count (:fetch p))))
       (is (= :disabled-by-trust (:pruning p)))
       (is (= 0 (get-in p [:chunks :pruned]))))))
 
 (deftest declared-bounds-are-not-trusted-by-a-from-footers-caller
-  (let [declared (table/table (assoc t :bounds-authority :declared))]
-    (is (= :disabled-by-trust
-           (:pruning (plan/plan declared {:columns ["price"]
-                                          :predicates [[:= "price" 120]]
-                                          :trust :from-footers}))))
-    (is (= :enabled
-           (:pruning (plan/plan declared {:columns ["price"]
-                                          :predicates [[:= "price" 120]]
-                                          :trust :declared}))))))
+  (testing "on a SIGNED root, so what is under test is the authority and not
+            the signature"
+    (let [declared (signed (table/table (assoc t :bounds-authority :declared)))]
+      (is (= :disabled-by-trust
+             (:pruning (plan/plan declared {:columns ["price"]
+                                            :predicates [[:= "price" 120]]
+                                            :trust :from-footers}))))
+      (is (= :enabled
+             (:pruning (plan/plan declared {:columns ["price"]
+                                            :predicates [[:= "price" 120]]
+                                            :trust :declared})))))))
 
 (deftest a-table-must-declare-where-its-bounds-came-from
   (is (thrown? #?(:clj Exception :cljs :default)
@@ -69,13 +75,13 @@
 (deftest no-members-is-refused-not-answered-as-empty
   (let [empty-t (table/table {:table "prices" :columns ["price"]
                               :bounds-authority :from-footers :members []})
-        p (plan/plan empty-t {:columns ["price"] :predicates [] :trust :from-footers})]
+        p (plan/plan empty-t {:columns ["price"] :predicates [] :trust :local})]
     (is (= :no-members (:refused p)))
     (is (nil? (:fetch p)))))
 
 (deftest unknown-column-is-refused-before-it-becomes-a-range
   (is (thrown? #?(:clj Exception :cljs :default)
-               (plan/plan t {:columns ["nope"] :predicates [] :trust :from-footers}))))
+               (plan/plan t {:columns ["nope"] :predicates [] :trust :local}))))
 
 (deftest adjacent-ranges-in-one-object-become-one-request
   (let [two {:object "obj:x" :size 4096 :rows 3
@@ -86,7 +92,7 @@
                                           :codec :uncompressed}}}]}
         t' (table/table {:table "t" :columns ["price" "qty"]
                          :bounds-authority :from-footers :members [two]})
-        p (plan/plan t' {:columns ["price" "qty"] :predicates [] :trust :from-footers})]
+        p (plan/plan t' {:columns ["price" "qty"] :predicates [] :trust :local})]
     (is (= 1 (count (:fetch p))))
     (is (= [4 204] (:range (first (:fetch p)))))
     (is (= 2 (count (:covers (first (:fetch p))))))
@@ -99,7 +105,7 @@
                                                 :codec :brotli}}}]}
         t' (table/table {:table "t" :columns ["price"]
                          :bounds-authority :from-footers :members [m]})
-        p (plan/plan t' {:columns ["price"] :predicates [] :trust :from-footers
+        p (plan/plan t' {:columns ["price"] :predicates [] :trust :local
                          :readable-codecs #{:uncompressed :snappy :gzip :zstd}})]
     (is (empty? (:fetch p)))
     (is (= :unreadable-codec (:reason (first (:refused p)))))))
@@ -131,7 +137,7 @@
       (is (nil? (get-in entry [:bounds "price"])))
       (testing "so the manifest is fetched, not pruned"
         (let [sel (plan/select-manifests top {:predicates [[:= "price" 999]]
-                                              :trust :from-footers})]
+                                              :trust :local})]
           (is (= 1 (count (:fetch sel))))
           (is (= 1 (get-in sel [:manifests :undecidable]))))))))
 
@@ -140,12 +146,55 @@
                          :members [(member-of "obj:a" [(chunk-of "price" 10 30 4 100)])
                                    (member-of "obj:b" [(chunk-of "price" 900 999 4 100)])]})
         {:keys [top]} (tana.shard/split (fn [s] (str "h" (hash s))) t' 1)
-        sel (plan/select-manifests top {:predicates [[:= "price" 950]] :trust :from-footers})]
+        sel (plan/select-manifests top {:predicates [[:= "price" 950]] :trust :local})]
     (is (= 1 (count (:fetch sel))))
     (is (= {:total 2 :pruned 1 :read 1 :undecidable 0} (:manifests sel)))))
 
 (deftest no-manifests-is-refused-not-answered-as-empty
   (let [sel (plan/select-manifests {:table "t" :columns ["price"]
                                     :bounds-authority :from-footers :manifests []}
-                                   {:predicates [] :trust :from-footers})]
+                                   {:predicates [] :trust :local})]
     (is (= :no-manifests (:refused sel)))))
+
+;; ── the root's signature ────────────────────────────────────────────────────
+
+(deftest an-unsigned-root-cannot-be-trusted-for-bounds
+  (testing "the hole this closes: a too-narrow bound deletes rows from an
+            answer, and unlike a bad pack tip there is nothing downstream to
+            re-hash that would catch it"
+    (let [p (plan/plan t {:columns ["price"] :predicates [[:= "price" 120]]
+                          :trust :from-footers})]
+      (is (= :disabled-unverified-root (:pruning p)))
+      (is (= 3 (count (:fetch p)))
+          "every chunk is read rather than pruned on bounds nobody signed"))
+    (testing "and signing it restores pruning"
+      (let [p (plan/plan (signed t) {:columns ["price"] :predicates [[:= "price" 120]]
+                                     :trust :from-footers})]
+        (is (= :enabled (:pruning p)))
+        (is (= 1 (count (:fetch p))))))))
+
+(deftest a-tampered-root-does-not-verify
+  (testing "one signature covers the statistics, the ranges AND the member list"
+    (let [good (table/sign t sign-fn "did:key:zPublisher")]
+      (is (some? (table/verify good verify-fn)))
+      (doseq [[what tampered]
+              [["a narrowed bound"
+                (assoc-in good [:members 0 :chunks 0 :columns "price" :stats :max] 11)]
+               ["a moved byte range"
+                (assoc-in good [:members 0 :chunks 0 :columns "price" :range] [4 5])]
+               ["an added member"
+                (update good :members conj (member-of "obj:x" [(chunk-of "price" 1 2 4 100)]))]]]
+        (is (nil? (table/verify tampered verify-fn)) (str what " must not verify"))))))
+
+(deftest a-sharded-top-needs-a-signature-too
+  (testing "per-manifest bounds are the same trust question one level up"
+    (let [{:keys [top]} (tana.shard/split (fn [s] (str "h" (hash s))) t 1)
+          sel (plan/select-manifests top {:predicates [[:= "price" 120]] :trust :from-footers})]
+      (is (= :disabled-unverified-root (:pruning sel))
+          "and the reason names the signature rather than the authority")
+      (is (= 3 (count (:fetch sel))) "every manifest is fetched when the top is unsigned"))
+    (let [{:keys [top]} (tana.shard/split (fn [s] (str "h" (hash s))) t 1)
+          sel (plan/select-manifests (signed top) {:predicates [[:= "price" 120]]
+                                                   :trust :from-footers})]
+      (is (= :enabled (:pruning sel)))
+      (is (= 1 (count (:fetch sel)))))))
