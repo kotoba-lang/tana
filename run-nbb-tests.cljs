@@ -9,8 +9,8 @@
      ADR-2608170300), so the list below is both required and run, and an
      empty run exits 2 — neither pass nor fail.
 
-  2. **Test different code than `clojure -M:test` did.** The nbb classpath
-     points at sibling *checkouts* while `deps.edn` pins *shas*, and those
+  2. **Test different code than `clojure -M:test` did.** The classpath may
+     point at sibling *checkouts* while `deps.edn` pins *shas*, and those
      drift: measured on this machine the same day this check was written,
      `columnar` was checked out 4 commits behind the pin and 13 days older,
      so \"JVM and nbb are both green\" was a claim about two different
@@ -49,24 +49,55 @@
                      {:lib (name lib) :sha sha}))))
          vec)))
 
+(defn- classpath-entries
+  "The classpath this process was actually given, from `--classpath`.
+
+  Reading argv rather than the filesystem is the point: the old check
+  inspected `../<lib>` and never established that the checkout it inspected
+  was the code being loaded. Two runners put the dependency in two different
+  places -- a sibling checkout here, `~/.gitlibs/libs/<lib>/<sha>/src` on a
+  murakumo node -- so a check written against one of them reports the other
+  as MISSING and refuses to run. Measured 2026-08-19: that is exactly what
+  happened, the fleet gate exited 93 (`no test summary`) while the same
+  suite passed locally with 39 tests / 1105 assertions."
+  []
+  (let [argv (vec (js->clj js/process.argv))
+        i (.indexOf argv "--classpath")]
+    (if (neg? i) ["src" "test"] (str/split (nth argv (inc i) "") #":"))))
+
+(defn- resolve-pin
+  "Where `lib` is coming from on the classpath, and at which sha.
+
+  `~/.gitlibs/libs/io.github.<org>/<lib>/<sha>/src` carries the sha IN THE
+  PATH, so that form cannot drift -- the entry either names the pinned sha
+  or it does not. A sibling checkout has to be asked."
+  [entries lib]
+  (or (when-let [e (first (filter #(re-find (re-pattern (str "/" lib "/[0-9a-f]{40}/")) %) entries))]
+        {:source :gitlibs :sha (second (re-find (re-pattern (str "/" lib "/([0-9a-f]{40})/")) e))})
+      (when-let [e (first (filter #(re-find (re-pattern (str "(^|/)" lib "/[^/]+$")) %) entries))]
+        (let [dir (str/replace e #"/[^/]+$" "")]
+          {:source :checkout :sha (git-head dir) :dir dir}))))
+
 (defn- check-pins! []
-  (let [rows (for [{:keys [lib sha]} (declared-pins)
-                   :let [dir (str "../" lib)
-                         head (git-head dir)]]
-               {:lib lib :pinned sha :checked-out head
-                :ok? (= sha head)})
+  (let [entries (classpath-entries)
+        rows (for [{:keys [lib sha]} (declared-pins)
+                   :let [{:keys [source] resolved :sha} (resolve-pin entries lib)]]
+               {:lib lib :pinned sha :resolved resolved :source source
+                :ok? (= sha resolved)})
         bad (remove :ok? rows)]
-    (println (str "pins checked: " (count rows)))
+    (println (str "pins checked: " (count rows)
+                  " (classpath entries: " (count entries) ")"))
     (when (zero? (count rows))
       ;; Evidence floor: a check that examined nothing must not read as clean.
       (println "no git pins found in deps.edn — the check could not run")
       (js/process.exit 2))
     (when (seq bad)
       (println "\nthe nbb classpath is NOT the dependency set deps.edn pins:\n")
-      (doseq [{:keys [lib pinned checked-out]} bad]
+      (doseq [{:keys [lib pinned resolved source]} bad]
         (println (str "  " lib
-                      "\n    pinned      " (subs pinned 0 12)
-                      "\n    checked out " (if checked-out (subs checked-out 0 12) "MISSING"))))
+                      "\n    pinned    " (subs pinned 0 12)
+                      "\n    on cp     " (if resolved (subs resolved 0 12) "NOT ON THE CLASSPATH")
+                      (when source (str "  (" (clj->js source) ")")))))
       (println "\nfix: west update --fetch smart" (str/join " " (map :lib bad)))
       (println "override: TANA_ALLOW_PIN_DRIFT=1")
       (when-not (.-TANA_ALLOW_PIN_DRIFT js/process.env)
