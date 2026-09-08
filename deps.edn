@@ -2,7 +2,12 @@
  ;; `columnar` and nothing else. The pruning rule has to be the same object
  ;; the engine uses, not a copy of it — a second implementation of `skip?`
  ;; drifts silently in the direction that still returns correct answers.
- :deps {io.github.kotoba-lang/columnar
+ :deps {
+        ;; kotoba.lang.text, not clojure.string. Pinned as an explicit floor:
+        ;; tools.deps takes the NEWEST sha it is shown, so without a floor here
+        ;; this repo silently rides whatever a sibling happens to name.
+        io.github.kotoba-lang/text {:git/sha "73bdb13ae7a3d004b44bca08be03a3191157a38f"}
+       io.github.kotoba-lang/columnar
         {:git/url "https://github.com/kotoba-lang/columnar.git"
          :git/sha "5e165f0f93f5463461d925248859cab339f58d4f"}}
  :aliases

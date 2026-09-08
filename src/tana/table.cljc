@@ -47,7 +47,7 @@
   trust. Neither is a default. This is the discipline `kotobase-storage`
   applies to ref profiles for the same reason: **guessing is silent**, and an
   ignored precondition returns success."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [tana.member :as member]))
 
 (def bounds-authorities
