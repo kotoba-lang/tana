@@ -21,7 +21,7 @@
   present and `:min`/`:max` missing. It is never stored as an empty map, and
   never as a wide-open interval: `columnar.stats` reads a missing bound as
   *no claim*, and a fabricated one would be a claim that permits a skip."
-  (:require [clojure.string :as str]))
+  (:require [kotoba.lang.text :as str]))
 
 (defn- non-blank [s] (and (string? s) (not (str/blank? s)) s))
 
