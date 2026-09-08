@@ -22,7 +22,7 @@
   (:require ["node:child_process" :as cp]
             ["node:fs" :as fs]
             [clojure.edn :as edn]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [clojure.test :as t]
             [tana.plan-test]
             [tana.parquet-range-test]
