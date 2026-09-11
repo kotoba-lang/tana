@@ -241,7 +241,7 @@ a Worker, a browser and a JVM test.
 
 ## Runtimes
 
-`clojure -M:test` and `npm run test:nbb` — **39 tests, 1,105 assertions**,
+`kbb -M:test` and `npm run test:nbb` — **39 tests, 1,105 assertions**,
 both green, and green on a real fleet node (`test-tana-7394fea-murakumo-levi`,
 receipt `76d8591167ea`). Portable `.cljc`, one runtime dependency.
 
