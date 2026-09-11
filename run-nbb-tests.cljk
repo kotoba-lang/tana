@@ -9,7 +9,7 @@
      ADR-2608170300), so the list below is both required and run, and an
      empty run exits 2 — neither pass nor fail.
 
-  2. **Test different code than `clojure -M:test` did.** The classpath may
+  2. **Test different code than `kbb -M:test` did.** The classpath may
      point at sibling *checkouts* while `deps.edn` pins *shas*, and those
      drift: measured on this machine the same day this check was written,
      `columnar` was checked out 4 commits behind the pin and 13 days older,
