@@ -1,5 +1,5 @@
 (ns tana.aggregate-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [tana.aggregate :as agg]
             [tana.table :as table]))
 

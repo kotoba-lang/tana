@@ -12,7 +12,7 @@
   is a statement about the reader's entry point, not about the format: the
   bytes of a column chunk are self-contained once you know four things, and
   those four things are exactly what `tana.member` writes down."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [columnar.bytes :as cbytes]
             [columnar.vector :as cvec]
             [parquet.decode :as decode]

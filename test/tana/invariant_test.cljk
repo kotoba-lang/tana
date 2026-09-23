@@ -10,7 +10,7 @@
   **plan(root) and plan(merge(fetched manifests)) name the same ranges.**
   Deterministic pseudo-randomness, so a failure is reproducible from the seed
   printed with it."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [tana.aggregate :as agg]
             [tana.plan :as plan]
             [tana.shard :as shard]
