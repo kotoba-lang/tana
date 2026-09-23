@@ -23,7 +23,7 @@
             ["node:fs" :as fs]
             [clojure.edn :as edn]
             [kotoba.lang.text :as str]
-            [clojure.test :as t]
+            [kotoba.test :as t]
             [tana.plan-test]
             [tana.parquet-range-test]
             [tana.chunk-only-test]

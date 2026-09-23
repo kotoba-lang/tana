@@ -1,5 +1,5 @@
 (ns tana.plan-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [tana.member :as member]
             [tana.plan :as plan]
             [tana.shard]

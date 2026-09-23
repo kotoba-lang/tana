@@ -10,7 +10,7 @@
   `parquet.source` with a source that records every range it was asked for,
   and require the recorded read to be exactly what `tana.member` wrote down
   without opening anything."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [columnar.bytes :as cbytes]
             [columnar.vector :as cvec]
             [parquet.footer :as footer]
