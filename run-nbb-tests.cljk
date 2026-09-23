@@ -21,7 +21,7 @@
   `TANA_ALLOW_PIN_DRIFT=1` runs anyway, for a deliberate cross-version run."
   (:require ["node:child_process" :as cp]
             ["node:fs" :as fs]
-            [clojure.edn :as edn]
+            [kotoba.lang.edn :as edn]
             [kotoba.lang.text :as str]
             [kotoba.test :as t]
             [tana.plan-test]
